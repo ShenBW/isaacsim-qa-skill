@@ -1,53 +1,115 @@
-# 开发工具、Python 脚本与 OmniGraph
+# 开发工具、Python 脚本与 OmniGraph（6.0.1）
 
-基础 URL: `https://docs.isaacsim.omniverse.nvidia.com/5.1.0/`
+基础 URL: `https://docs.isaacsim.omniverse.nvidia.com/6.0.1/`
 
 ## 一、开发工具链
 
-面向需要开发 Python/C++ 扩展、调试脚本、创建 OmniGraph 节点的中级用户（development_tools/index.html）。
+来源: development_tools/index.html
 
-- **VS Code**：安装 marketplace 扩展 *Isaac Sim VS Code Edition*，并在 Extension Manager 中启用 `isaacsim.code_editor.vscode`，经 `Window > VS Code` 打开预配置工作区。支持向运行中的 Isaac Sim 远程执行 Python（选中代码后在扩展面板点 Run）、代码片段、扩展/项目模板生成。`.vscode` 内三个关键文件：`launch.json`（含 "Python: Attach" 附加调试与 "(Linux) isaac-sim" 启动调试）、`settings.json`（指定解释器 `${workspaceFolder}/kit/python/bin/python3` 及分析路径）、`tasks.json`（standalone 脚本环境自动化）。（development_tools/vscode.html）
-- **Jupyter Notebook**：启用 `isaacsim.code_editor.jupyter` 扩展，`Window > Jupyter Notebook` 打开 JupyterLab。两种内核：*Omniverse (Python 3)* 在运行中的实例内执行；*Isaac Sim Python 3* 跑 standalone（仅 Linux）。standalone 须先实例化 `SimulationApp` 再 import 其他模块，用 `./jupyter_notebook.sh xxx.ipynb` 启动；框架自动应用 `nest_asyncio`。限制：阻塞代码会冻结 Isaac Sim、不支持 IPython magic 与 matplotlib 绘图、回调 print 输出到终端而非 notebook。（development_tools/jupyter_notebook.html）
-- **Script Editor**：Kit 内置 Python 编辑器，`Window > Script Editor` 打开；可多标签页，各标签共享同一解释器环境（变量/库互通），用于直接操作 Stage 与快速试验。（development_tools/omniverse_script_editor.html）
-- **Carb 设置**：Carbonite 设置控制窗口、ROS 版本等默认行为。四种修改方式：①Script Editor 临时修改 —— `settings = carb.settings.get_settings(); settings.set("/exts/.../foo", True)`；②命令行 `./isaac-sim.sh --/exts/.../foo=True`；③改扩展 config 的 `.toml`（永久）；④改 `apps/` 下应用 `.kit` 文件（永久）。（development_tools/carb_settings.html）
+### Isaac Sim MCP Server（6.0 新增，重点）
 
-## 二、Python 脚本核心概念
+来源: development_tools/isaac_sim_mcp.html（详细内容在 GitHub `NVIDIA-Omniverse/kit-usd-agents/source/mcp/isaacsim_mcp`）
 
-- **两种执行模式**：standalone 脚本（命令行执行、自动化/批量仿真）与交互式脚本（Script Editor/控制台内探索 API）。（python_scripting/python_scripting_concepts.html）
-- **Core API 体系**：对原始 USD 与物理引擎 API 的机器人向封装 —— 原生 USD 建一个带物理的立方体约需 30 行，Core API 一个 `DynamicCuboid` 即可。概念层级（剧场比喻）：Application（UI 层）→ Simulation（推进时间的引擎）→ Stage（USD 容器）→ **World**（仿真上下文、时间管理，单例）→ **Scene**（资产集合）。注意：5.0 起引入重写的 **Core Experimental API**，现行 Core API 将逐步弃用，建议尽早迁移。（python_scripting/core_api_overview.html）
-- **SimulationApp 与时序**：`SimulationApp` 管理应用生命周期，**所有 Omniverse 级 import 必须在其实例化之后**（依赖扩展系统先加载）；无显示环境设 `{"headless": True}`。基本骨架：实例化 → import → 循环 `simulation_app.update()` → `simulation_app.close()`。扩展可通过 `.kit` 文件 `[dependencies]` 或 `enable_extension()` 启用。
+一个 Model Context Protocol 服务器，让 AI 编码助手通过**语义检索**获取 Isaac Sim 深度知识（扩展、代码示例、settings、开发者指引）。注意：它是**知识检索型** MCP，不直接操控仿真。
 
-## 三、Standalone Python 环境（python.sh）
+- **部署**：推荐 Docker——`./build-docker.sh` 构建（约 1.35 GB），`docker run --rm -p 9904:9904 --env-file ../.env isaacsim-mcp:latest`；本地开发用 `./setup-dev.sh` + `./run.sh`
+- **前置条件**：Python 3.11–3.13（3.10 不兼容）、Poetry、Git LFS（缺失会在首次调用时静默报 `Extension data is not available`）、完整 clone（sparse checkout 不行）、NVIDIA API Key（`.env` 中 `NVIDIA_API_KEY=nvapi-...`）
+- **传输**：仅 Streamable HTTP，端点 `POST http://localhost:9904/mcp`（无尾斜杠，否则 307）
+- **客户端配置**：Claude Code 用 `claude mcp add isaac-sim-mcp -t http http://localhost:9904/mcp`；Cursor/Windsurf/VS Code 在配置中填 `"url": "http://localhost:9904/mcp"`
+- **5 个工具**：`get_isaac_sim_instructions`、`search_isaac_sim_extensions`、`get_isaac_sim_extension_details`、`search_isaac_sim_code_examples`、`search_isaac_sim_settings`
+- **嵌入后端**：云端（仅需 NVIDIA_API_KEY）或本地 NIM（需 GPU、`NGC_API_KEY`，设 `KIT_EMBEDDER_BACKEND=local` 等）
 
-`python.sh`（Windows 为 `python.bat`）完成三件事：定位 apps 目录下的 .kit 文件、source `setup_python_env.sh` 加载扩展接口、调用打包的 Python 解释器；配置 `ISAAC_PATH`、`PYTHONPATH`、`LD_LIBRARY_PATH`、`CARB_APP_PATH` 等环境变量。官方 standalone 示例覆盖时间步进、加载 USD Stage、URDF 导入、分辨率修改、资产转换与 livestream。（python_scripting/manual_standalone_python.html，环境详情另见 python_scripting/environment_setup.html）
+### Python Server 远程代码执行（6.0 新增）
 
-## 四、常用代码片段主题
+来源: development_tools/python_server.html
 
-- **场景搭建**（Scene Setup 片段）：刚体创建（DynamicCuboid、地面）、批量视图类 `RigidPrim`/`RigidContactView`（接触力监测）、OBJ/STL/FBX 转 USD、物理场景与重力/求解器配置、碰撞网格（凸包/凸分解）、物理查询（overlap、raycast）、MDL 材质、变换矩阵与保存 Stage。
-- **通用工具**（python_scripting/util_snippets.html）：异步任务与 timeline 控制（`omni.timeline.get_timeline_interface().play/pause()`）、viewport 相机参数（`omni.kit.viewport.utility.get_active_viewport()`）、三种点/几何渲染方案 —— `UsdGeom.Points`（大量点最省）、`UsdGeom.PointInstancer`（需物理交互）、`DebugDraw`（纯可视化最快，`_debug_draw.acquire_debug_draw_interface()`）。默认渲染有最多 3 帧 in-flight，零延迟需求可用 `omni.isaac.sim.zero_delay.python.kit`。
-- **机器人仿真**（python_scripting/robots_simulation.html）：`Articulation` 与批量 `ArticulationView`；四种关节控制 —— 位置目标 `set_articulation_dof_position_targets`、速度控制（先把 stiffness 置零）、力矩 `set_articulation_dof_efforts`、单 DOF `find_articulation_dof`；查询关节状态。须在仿真运行中执行，建议在 Script Editor 测试。
+扩展 `isaacsim.code_editor.python_server` 提供 TCP 服务器，允许 VS Code、**LLM 智能体**或自定义脚本向运行中的 Isaac Sim 提交 Python 代码。这是 6.0 与 MCP 配套的"执行通道"：MCP 查知识，Python Server 执行代码。
 
-## 五、Core API 教程系列递进脉络
+- 默认 `127.0.0.1:8226`（可经 carb settings 改）
+- 协议：发送 UTF-8 源码后 **TCP 半关闭**（`write_eof()`）标记结束；返回单个 JSON：`status`/`output`/`result`/`traceback`/`ename`/`evalue`
+- 命令行示例：`echo 'print("Hello")' | nc 127.0.0.1 8226`
+- 支持顶层 `await`；**跨连接保持全局状态**；可选 UDP 广播 carb 日志（`carb_logs`）
+- 安全：host 设为 `0.0.0.0` 时局域网内任何机器都能执行任意代码，仅限可信环境
 
-系列共 8 课，面向初学者，主线是"用控制器控制轮式机器人与机械臂并记录数据"（core_api_tutorials/index.html）：
+### VS Code
 
-1. **Hello World**：继承 `BaseSample`（封装世界加载、热重载）；`World` 为单例管理物理步进，`Scene` 管理 Stage 资产。关键方法：`setup_scene()`（建场）、`setup_post_load()`（物理句柄传播后赋值）、`world.add_physics_callback()`、`DynamicCuboid`、`get_world_pose()`/`get_linear_velocity()`。扩展工作流为异步回调驱动；standalone 则 `world.reset()` 后手动 `world.step(render=True)` 循环。（tutorial_core_hello_world.html）
-2. **Hello Robot**：`add_reference_to_stage()` 从 Nucleus 加载 Jetbot，包成 `Robot` 类；经 `get_articulation_controller()` 取关节控制器，用 `apply_action(ArticulationAction)` 在物理回调中每步发速度指令；更高层可用 `WheeledRobot.apply_wheel_actions()`。（tutorial_core_hello_robot.html）
-3. **添加控制器**：自定义 `CoolController` 继承 `BaseController`，实现 `forward()` 返回 `ArticulationAction`（独轮车模型：线/角速度 → 左右轮速）；再替换为内置 `DifferentialController` 与更高层的 `WheelBasePoseController`（直接给目标位姿）。（tutorial_core_adding_controller.html）
-4. **添加机械臂**：导入 Franka（`isaacsim.robot.manipulators.examples.franka`），gripper 设初始张开关节位；用 `PickPlaceController` 完成抓取-放置。三种递进写法：直接实现 → 自定义 `FrankaPlaying(BaseTask)` 任务类 → 复用扩展内置 `PickPlace` 任务。（tutorial_core_adding_manipulator.html）
-5. **多机器人**：`RobotsPlaying(BaseTask)` 统一管理 Jetbot+Franka，方法四件套 `set_up_scene()`/`get_observations()`/`pre_step()`/`post_reset()`；用 `task_event` 状态变量（0/1/2）编排：Jetbot 推方块→倒退 200 步让位→Franka 执行 PickPlace；子任务观测组合进父任务观测。（tutorial_core_adding_multiple_robots.html）
-6. **多任务**：任务构造函数接受 `offset` 参数实现空间平移，多实例并行；用 `find_unique_string_name()` 与 `is_prim_path_valid()` 保证命名/prim 路径唯一；`get_params()` 暴露任务参数；应用类维护任务/控制器/机器人列表，`physics_step()` 中逐任务施加动作，`world_cleanup()` 处理热重载清理。（tutorial_core_multiple_tasks.html）
+来源: development_tools/vscode.html
 
-（系列后续还有 Adding Props、Data Logging 两课。）
+市场扩展 **Isaac Sim VS Code Edition**：远程执行代码、浏览 Isaac Sim/Kit/USD 片段、生成扩展模板、内嵌文档。依赖两个 Kit 扩展：`isaacsim.code_editor.vscode`（菜单集成）+ `isaacsim.code_editor.python_server`（执行后端）。安装目录自带 `launch.json`（调试当前文件/attach/启动带调试的 Isaac Sim）、`settings.json`、`tasks.json`。
 
-## 六、OmniGraph 可视化编程
+### Jupyter Notebook
 
-- **概念**：Omniverse 的图计算/可视化编程框架，连接多系统函数；Isaac Sim 中支撑 Replicator、ROS 2 bridge、传感器数据访问、控制器与外设 I/O。编辑器入口 `Window > Graph Editors > Action Graph`。（omnigraph/index.html）
-- **入门教程**：用 Action Graph 控制 Jetbot。核心节点：**On Playback Tick**（仅播放时每帧发执行事件）、**Differential Controller**（线/角速度 → 双轮指令）、**Articulation Controller**（向指定机器人关节施加位置/速度/力指令，需 Constant Token + Make Array 组关节名列表）。也可用菜单 `Tools > Robotics > Omnigraph Controllers` 一键生成差速控制图（可配轮距/轮半径）。（omnigraph/omnigraph_tutorial.html）
-- **Python 建图**：`og.Controller.edit()` 一次性指定图路径、evaluator，并用 keys —— `CREATE_NODES`、`CONNECT`、`SET_VALUES` —— 批量建节点/连线/赋值；支持事后 get/set 属性、增删节点；可设 "On Demand" 管线阶段按需显式求值。参考示例 `omnigraph_triggers.py`。（omnigraph/omnigraph_scripting.html）
-- **自定义 Python 节点**：两个文件 —— `.ogn`（JSON：元数据、输入/输出端口、Action Graph 用 `execIn` 执行端口、`"language": "python"`）+ `.py`（同名类实现 `compute(db)`，经 database 读写输入输出，成功返回 True）。可放入现有扩展节点目录或用模板生成器建独立扩展；参考现有节点位于 `exts/isaacsim.<ext>/isaacsim/<ext>/ogn/python/nodes/`。（omnigraph/omnigraph_custom_python_nodes.html）
+来源: development_tools/jupyter_notebook.html
 
-## 七、GUI 界面构成
+两种模式：① 交互式——扩展 `isaacsim.code_editor.jupyter` 在运行中的 Isaac Sim 内启动 JupyterLab（Window > Jupyter Notebook）；② standalone——`./jupyter_notebook.sh xxx.ipynb`（仅 Linux），自动注册 `Isaac Sim Python 3` 内核并应用 `nest_asyncio`。限制：阻塞代码会冻结应用、不支持 IPython magic 与 matplotlib、回调输出走终端。
 
-- **文档结构**：UI 参考、快捷键、App Selector、Create 菜单、Replicator 菜单、Preferences、选择模式；Viewport、Stage、Property、Script Editor 等作为外部扩展另行文档化。注：5.1.0 已不再维护，修复只进新版本。（gui/index.html）
-- **主界面**：菜单栏（Create/Window/Tools/Utilities/Layout 等 Isaac Sim 专属菜单）、**Viewport**（3D 资产主视图）、主工具栏（选择模式 模型/prim、移动/旋转/缩放及全局/局部坐标、吸附、播放/停止）、Browsers（资产与示例库）、**Stage 窗口**（USD 场景层级）、**Property 面板**（选中 prim 的属性编辑）。支持拖拽标签重排、面板分离为独立 OS 窗口、隐形分隔条调整大小。（gui/reference_user_interface.html）
+### Script Editor 与 carb settings
+
+来源: development_tools/omniverse_script_editor.html、development_tools/carb_settings.html
+
+Script Editor（Window > Script Editor）为 Kit 内置多标签 Python 环境，各标签共享变量与导入。carb settings 四种修改方式：Script Editor 里 `carb.settings.get_settings().set(...)`（可配合 `extension_manager.set_extension_enabled_immediate()` 重启扩展生效）、启动参数 `./isaac-sim.sh --/exts/<ext>/<key>=value`、扩展 `.toml` 的 `[settings]`、应用 `.kit` 文件。
+
+## 二、Python 核心概念与 API 现状
+
+来源: python_scripting/python_scripting_concepts.html、core_api_overview.html
+
+两种工作流：**standalone 脚本**（命令行、自动化/批处理/headless）与**交互式脚本**（Script Editor/Jupyter，探索 API、快速原型），能力等价，区别在执行上下文。
+
+**API 现状（相对 5.1 的关键变化）**：Core API 是 USD/PhysX 之上的机器人向封装（Application/Simulation/Stage/World/Scene 概念，`DynamicCuboid` 等）。文档明确警告：5.0 引入的 **Core Experimental API** 是 Core API 的重写版（更健壮、灵活），**现有 Core API 将在后续版本弃用并移除**，官方强烈建议尽早迁移。6.0 中这一转移已落到实处——官方教程与代码片段已大面积改用 experimental API（见下）。相关的 Motion Generation 也已标注 Deprecated。
+
+## 三、standalone 环境
+
+来源: python_scripting/manual_standalone_python.html
+
+`python.sh`/`python.bat` 会 source `setup_python_env.sh` 配置 `ISAAC_PATH`、`PYTHONPATH`、`LD_LIBRARY_PATH`、`CARB_APP_PATH` 后调用内置解释器。核心模式：
+
+```python
+from isaacsim import SimulationApp
+simulation_app = SimulationApp({"headless": True})
+# 所有 Omniverse 级 import 必须在实例化之后
+simulation_app.update(); simulation_app.close()
+```
+
+扩展可通过 `.kit` 依赖或运行时 `enable_extension()` 启用；headless 下需去掉 matplotlib 等 GUI 调用。
+
+## 四、代码片段主题
+
+来源: python_scripting/environment_setup.html、util_snippets.html、robots_simulation.html
+
+- **场景搭建**：刚体创建（`Cube`、`GroundPlane`、`RigidPrim`、`GeomPrim`）、批量 view 对象、接触过滤（`get_net_contact_forces()`、`get_contact_force_matrix()`）、质量（`set_masses()`/`set_densities()`）、包围盒 `compute_aabb()`、语义标注 `add_labels()`、资产转换 `AssetConverterContext`；物理场景（`PhysxScene`、`set_gravity()`）、`overlap_box()`/`overlap_sphere()`、`raycast_closest()`；材质（`OmniGlassMaterial`/`OmniPbrMaterial`）、位姿（`get/set_world_poses()`）
+- **工具**：异步任务（`omni.kit.app.get_app().next_update_async()`）、相机参数、三种渲染路径（`UsdGeom.Points`/`UsdGeom.PointInstancer`/DebugDraw：`isaacsim.util.debug_draw`）、零延迟渲染帧配置
+- **机器人**：使用 **experimental** 的 `isaacsim.core.experimental.prims.Articulation`——`get_dof_positions/velocities/efforts()`、`set_dof_position_targets()`/`set_dof_velocity_targets()`/`set_dof_efforts()`、`switch_dof_control_mode()`、`get_dof_indices()`、`num_dofs`/`dof_names`/`dof_paths`。这是相对 5.1（以 `isaacsim.core.api` 的 `SingleArticulation`/`ArticulationAction` 为主）的显著变化
+
+## 五、Core API 教程脉络
+
+来源: core_api_tutorials/index.html
+
+顺序：Hello World → Hello Robot → Adding a Manipulator → Adding Multiple Robots → Multiple Robot Scenarios → Adding Props。**6.0 教程已重写为基于 experimental API 与回调驱动的模式**（5.1 时以 `World`+`BaseSample`+Task 体系为主）：
+
+1. **Hello World**：分层构建物体（几何 `Cube` → 碰撞 `GeomPrim` → 刚体 `RigidPrim`），`SimulationManager.register_callback()` 注册物理回调；experimental API 返回批量 warp 数组，单对象取 `.numpy()[0]`；讲解 extension 热重载（Ctrl+S）与 standalone 双工作流
+2. **Hello Robot**：Jetbot；`stage_utils.add_reference_to_stage()` 导入资产，`Articulation` 包装，回调内下发轮速
+3. **Adding a Manipulator**：Franka Panda；`Franka` 类（继承 `Articulation`，含 IK 与夹爪控制）、`FrankaPickPlace.setup_scene()` + `forward()` 驱动七阶段抓放状态机
+4. **Adding Multiple Robots**：Jetbot 推方块 + Franka 抓取，三阶段状态机，多机器人各自控制循环共存于同一物理仿真
+5. **Multiple Robot Scenarios**：`RobotScenario` 类封装 Jetbot+Franka+Cube 及位置偏移，for 循环批量实例化并行场景，独立状态机 + 统一 reset
+
+## 六、OmniGraph
+
+来源: omnigraph/omnigraph_tutorial.html 等
+
+- **教程**：JetBot 差速控制 Action Graph——On Playback Tick → Differential Controller（轮距 0.1125、轮径 0.03）→ Articulation Controller，Constant Token + Make Array 指定关节名；进阶键盘控制；也可用菜单快捷方式一键生成
+- **Python 脚本化**（omnigraph_scripting.html）：`og.Controller.edit()` 配 `og.Controller.Keys` 的 `CREATE_NODES`/`SET_VALUES`/`CONNECT`；`pipeline_stage=GRAPH_PIPELINE_STAGE_ONDEMAND` 后用 `graph_handle.evaluate()` 手动求值；示例节点 `omni.graph.action.OnTick`、`omni.graph.nodes.ConstantString` 等
+- **自定义 Python 节点**（omnigraph_custom_python_nodes.html）：`.ogn`（JSON 定义输入/输出）+ `.py`（静态 `compute(db)`，成功返 True）；Action Graph 需 `execIn`，Push Graph 不需要；可参考 `exts/isaacsim.<ext>/…/ogn/python/nodes/` 现有节点
+- **自定义 IPC 节点（6.0 新增文档）**（omnigraph_custom_ipc_nodes.html）："薄桥"设计——节点只做序列化与传输，数据读写留给上下游节点。参考实现 `isaacsim.examples.ipc` 用 BSD TCP socket，提供 `SimpleSendSimulationClockCpp/Py`（发仿真时钟）与 `SimpleReceiveExternalStepCpp/Py`（收外部步进令牌，可实现外部 step-gating）；架构传输无关，可换 ZeroMQ/gRPC/共享内存（Python 经 `extension.toml` 的 `[python.pipapi]`，C++ 经 packman 依赖）。关键模式：继承 `BaseResetNode`（C++ 实现 `reset()`、Python 实现 `custom_reset()`，timeline 停止时关闭句柄），per-instance 状态经 `db.per_instance_state`/`db.perInstanceState<>()`；`compute()` 内只做**非阻塞** I/O 后置 `db.outputs.execOut = og.ExecutionAttributeState.ENABLED`；慢路径用工作线程 + 队列；大消息（相机帧）走流式或句柄传递。开发流程：`./repo.sh template new` 选 "Isaac Sim OmniGraph Node Extension" → 加依赖 → 写 `.ogn` → 实现 compute → `./build.sh` 重编译并重启（C++ 不支持热替换）。可与 `IsaacReadSimulationTime`、`IsaacArticulationState/Controller`、physics/RTX 传感器节点对接
+
+## 七、GUI
+
+来源: gui/index.html、gui/reference_user_interface.html
+
+GUI 章节含：用户界面参考、快捷键、Create 菜单、Replicator 菜单、Preferences、选择模式；Viewport/Stage/Property/Extension Manager/Layers/Console 等由 Omniverse 上游扩展提供。主界面：Viewport（主视图）、Stage（USD 层级）、Property 面板、菜单栏（Create/Window/Tools/Utilities/Layout）、主工具栏（移动/旋转/缩放、播放控制，图标下小三角右键展开更多选项）、Browsers；窗口支持拖拽停靠、撕出为独立 OS 窗口。UI 布局本身相对 5.1 无重大变化。
+
+## 相对 5.1 的变化小结
+
+1. **新增 Isaac Sim MCP Server**（知识检索型，HTTP :9904/mcp，5 个语义检索工具）
+2. **新增 Python Server 远程执行文档**（TCP :8226，面向 LLM 智能体，持久会话状态）
+3. **Core API 明确进入弃用通道**，教程与片段全面转向 Core Experimental API（warp 批量数组、`SimulationManager` 回调、`isaacsim.core.experimental.prims.Articulation`）；Motion Generation 标记 Deprecated
+4. **新增 Building Custom IPC OmniGraph Nodes 指南**（BaseResetNode 模式、非阻塞 compute、`isaacsim.examples.ipc` 参考实现）

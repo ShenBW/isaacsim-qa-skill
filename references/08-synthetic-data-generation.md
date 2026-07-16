@@ -1,97 +1,92 @@
-# 合成数据生成（SDG）
+# 合成数据生成（6.0.1）
 
-## SDG 总览与 Replicator 定位
+## 一、Replicator 感知数据生成
 
-Isaac Sim 5.1 的 SDG 分四大块：感知数据生成（Replicator）、行为与事件数据生成、抓取 SDG、MobilityGen。Replicator 基于 `omni.replicator.core`（`rep`），核心概念：**Randomizer**（对材质/位姿/光照等做程序化随机）、**Annotator**（提取 RGB、语义/实例分割、2D/3D 包围盒、光流等标注）、**Writer**（BasicWriter、KittiWriter、CocoWriter、PoseWriter 等落盘格式）、**Trigger**（`on_frame`/`on_custom_event` 控制触发时机）、**Orchestrator**（调度整个采集流程）。三种工作模式：GUI（Synthetic Data Recorder）、Python 脚本/Script Editor、YAML 配置驱动（转为 OmniGraph）。注意 5.1.0 已停止支持。
+### 概览与基础工作流
 
-来源：synthetic_data_generation/index.html、replicator_tutorials/index.html、replicator_tutorials/tutorial_replicator_overview.html
+Replicator 是基于 `omni.replicator` 的 SDG 框架，核心概念：**Annotator**（数据提取，需 prim 带语义标签）、**Writer**（输出，默认 `BasicWriter`）、**Randomizer**（随机化）、**Trigger**（触发）。提供 GUI 录制器、Replicator YAML（转为 OmniGraph 管线）、Python 脚本、Semantics Schema Editor 四类入口。
+来源: replicator_tutorials/tutorial_replicator_overview.html
 
-## Synthetic Data Recorder（GUI 工具）
+**Synthetic Data Recorder**（Tools > Replicator > Synthetic Data Recorder）：配置 Render Products（相机+分辨率）、annotator 勾选、输出目录（本地/S3）、帧数与 RTSubframes（减少动态场景伪影）；自定义 writer 须接受 `backend` 参数或 `**kwargs`；GUI 状态可存为 JSON。
+来源: replicator_tutorials/tutorial_replicator_recorder.html
 
-菜单 Tools > Replicator > Synthetic Data Recorder。Writer 面板配置 Render Products（相机路径+分辨率）、Writer 参数（默认 BasicWriter，自定义 writer 用 JSON 配置）、输出目录（支持 S3）、可保存/加载 GUI 配置。Control 面板：Start/Stop/Pause、帧数（0=无限）、RTSubframes（弱光/快速运动时增大以减少伪影）、Control Timeline、Verbose。内部用 `orchestrator.step()` 保证帧同步；资产需有语义标签。
+**Getting Started 脚本**：两种执行模式——Script Editor（async/await，`rep.orchestrator.step_async()`）与 Standalone（`SimulationApp` + 同步 `step()`）。核心模式：
 
-来源：replicator_tutorials/tutorial_replicator_recorder.html
+```python
+rep.orchestrator.set_capture_on_play(False)
+writer = rep.writers.get('BasicWriter')
+writer.initialize(backend=backend, rgb=True)
+writer.attach(rp)
+rep.orchestrator.step()
+```
 
-## 核心 API 入门套路
+6.0 引入 `rep.functional.create/modify` 函数式 API、`rep.trigger.on_custom_event()` + `rep.utils.send_og_event()`、`wait_for_render=False` 与 write-to-fabric 性能优化。
+来源: replicator_tutorials/tutorial_replicator_getting_started.html
 
-典型流程：`rep.create.render_product()`/`rep.create.camera()`/`rep.create.light()` → `rep.trigger.on_frame()` 或 `on_custom_event()`（配合 `rep.utils.send_og_event()` 手动触发）→ `rep.WriterRegistry.get("BasicWriter")` + `writer.initialize()` + `writer.attach(rp)` → `rep.orchestrator.set_capture_on_play(False)`，循环 `rep.orchestrator.step(rt_subframes=N)`，结束 `wait_until_complete()`。Script Editor 用异步 `step_async()`，standalone 用同步 `step()`。低分辨率下建议 DLSS 设 Quality 模式（`rtx/post/dlss/execMode=2`）。
+### SDG Workflows（6.0 新增）
 
-来源：replicator_tutorials/tutorial_replicator_getting_started.html
+两个端到端完整范例：**Workflow 1** 物理沉降（持久场景，每次采集前重新掉落箱体由 PhysX 稳定）；**Workflow 2** 碰撞检测放置（按 `CAPTURES_PER_SCENE` 周期重建场景，`rep.functional.randomizer.scatter_2d(check_for_collisions=True)` 免物理堆叠，失败自动重试）。强调七项关键配置：Backend 体系（`rep.backends.get("DiskBackend")`）、关闭自动采集、DLSS 模式（`rtx/post/dlss/execMode=2` 抗鬼影）、种子随机（`rep.rng.ReplicatorRNG(seed=42)`，6.0 新 API）、`rp.hydra_texture.set_updates_enabled(False)` 在物理/随机化期间停渲染、`step(delta_time, rt_subframes, pause_timeline)` 参数、收尾 `rep.orchestrator.wait_until_complete()`。
+来源: replicator_tutorials/tutorial_replicator_sdg_workflows.html
 
-## 场景级 / 物体级 / 环境级（Infinigen）SDG
+### 场景/物体/环境三类 SDG
 
-- **场景级**：仓库+叉车+托盘场景。先 `SimulationApp` 再 import，`open_stage()` 加载环境，`prims.create_prim()` 生成带语义标签资产；`rep.randomizer.register()` 注册自定义随机器（`scatter_2d(check_for_collisions=True)` 撒箱、`rep.randomizer.materials()`、灯光/相机随机），先物理落箱再循环 `orchestrator.step()`。支持 Basic/Kitti/Coco writer，运行 `./python.sh standalone_examples/replicator/scene_based_sdg/scene_based_sdg.py --config xxx.yaml`。
-- **物体级**：封闭工作区+隐形碰撞墙，训练资产+形状/网格干扰物悬浮碰撞；混合三类随机化——物理（速度、拉回中心）、USD API 直接改属性（`set_transform_attributes`、球面采样相机位姿）、Replicator（`rep.create.group()`+`rep.randomizer.color()`、dome 背景）；常配 PoseWriter。
-- **Infinigen 环境级**：用 Infinigen 按 seed 批量生成程序化室内场景，`--omniverse` 导出 USD；SDG 脚本循环加载各环境、加碰撞体、生成标注资产与干扰物，先拍悬浮帧、物理沉降后再拍，配置全由 YAML 驱动。
+- **Scene-based**：仓库场景，叉车+托盘+箱体（物理掉落 + scatter_2d）+ 三相机随机视角；BasicWriter+DiskBackend，支持 Kitti/Coco；运行：`./python.sh standalone_examples/replicator/scene_based_sdg/scene_based_sdg.py --config <json/yaml>`。来源: tutorial_replicator_scene_based_sdg.html
+- **Object-based**：面向位姿估计/检测，物体在工作域内随机生成（部分悬浮、部分掉落）、随机速度、干扰物随机颜色尺度，PoseWriter 输出；`standalone_examples/replicator/object_based_sdg/object_based_sdg.py`。来源: tutorial_replicator_object_based_sdg.html
+- **Environment-based（Infinigen）**：用 Infinigen 程序化生成室内场景（不同 seed 批量导出 USD），Isaac Sim 中加碰撞体、定义工作区，放置带标签 YCB 目标物+干扰物，悬浮/物理沉降两种采集；`standalone_examples/replicator/infinigen/infinigen_sdg.py`。来源: tutorial_replicator_infinigen_sdg.html
 
-来源：replicator_tutorials/tutorial_replicator_scene_based_sdg.html、tutorial_replicator_object_based_sdg.html、tutorial_replicator_infinigen_sdg.html
+### 机器人任务随机化范例
 
-## 域随机化实战：AMR 导航与 UR10 码垛
+- **AMR Navigation**：Nova Carter 经 OmniGraph 导航栈驶向随机 Xform 目标，随机化 dolly 位姿/灯光/堆叠道具；接近阈值时触发采集，LdrColor annotator 读双目相机；`standalone_examples/replicator/amr_navigation.py --use_temp_rp --num_frames --env_interval`。来源: tutorial_replicator_amr_navigation.html
+- **UR10 Palletizing**：事件触发式采集——物理 overlap 查询监测 bin 接触翻转器/落到托盘两个时刻，暂停仿真、随机化灯光/材质/相机、采集后恢复状态继续；`rep.annotators.get()` 取 RGB+实例分割。来源: tutorial_replicator_ur10_palletizing.html
 
-- **AMR 导航**：Nova Carter 双目相机采 LdrColor（1024×1024），机器人接近目标（dolly）时基于距离回调触发采集；随机化目标位姿、每 N 帧切换环境、球灯颜色随机。可用临时 render product（`rp.hydra_texture.set_updates_enabled()`）省显存。`./python.sh standalone_examples/replicator/amr_navigation.py --use_temp_rp`。
-- **UR10 码垛**：`PalletizingSDGDemo` 监听 timeline 事件，用 `get_physx_scene_query_interface().overlap_box()` 检测料箱碰撞事件→暂停仿真→跑 SDG→恢复，保证"SDG 不改变仿真结果"（材质用 `UsdShade.MaterialBindingAPI` 缓存后还原）。展示两种取数方式：annotator `get_data()` 手动存图 vs BasicWriter 自动写盘；`rep.trigger.on_frame(interval=4)` 控制不同随机化频率。
+### Cosmos SDG
 
-来源：replicator_tutorials/tutorial_replicator_amr_navigation.html、tutorial_replicator_ur10_palletizing.html
+用 **CosmosWriter** 采集 Carter Nova 仓库导航的多模态数据（RGB/深度/分割/着色分割/边缘，按 clip 组织为 PNG+MP4），再经 **Cosmos Transfer**（Multi-ControlNet，vis/edge/depth/seg 分支权重 0–1）做 sim-to-real 照片级增强；`./python.sh standalone_examples/replicator/cosmos_writer_warehouse.py`。来源: tutorial_replicator_cosmos.html
 
-## Cosmos 视频生成
+### 增强、随机化片段与排错
 
-用 **CosmosWriter** + `DiskBackend` 为 Cosmos Transfer（Multi-ControlNet）录制五路同步模态：RGB(vis)、深度、分割、着色分割、Canny 边缘（`canny_threshold_low/high` 可调，`use_instance_id`/`segmentation_mapping` 控制分割）。循环 `rep.orchestrator.step(pause_timeline=False)` 采帧，`cosmos_writer.next_clip()` 分片，输出 clip 目录+每模态 mp4，直接作为 Cosmos 的控制输入。
+- **Augmentation**：annotator 级（attach 前）与 writer 级两种；NumPy（CPU）/Warp（GPU 核，免数据搬运）；API：`rep.annotators.Augmentation.from_function()`、`rep.annotators.augment()`、`augment_compose()`、`writer.augment_annotator()`。来源: tutorial_replicator_augmentation.html
+- **Randomization Snippets**：灯光、OmniPBR 纹理、链式随机（Fibonacci 球面相机分布）、物理填箱（临时围墙+施力沉降）、SimReady 资产 variant 选择；大量直接 USD API（`UsdGeom.Xformable`、`UsdShade.MaterialBindingAPI`、`UsdPhysics`）配合 `step_async()`。来源: tutorial_replicator_isaac_randomizers.html
+- **Troubleshooting**：深度噪点→关抗锯齿；材质加载不及时/鬼影→提高 `rt_subframes`（≥2）；黑图→`--reset-user`；时间线停止时异步渲染丢帧→`--/exts/isaacsim.core.throttling/enable_async=false`；Windows standalone 首帧缺失→先 warmup `step()`。**迁移要点：`omni.replicator.character` / `omni.replicator.agent` 已更名为 `isaacsim.replicator.agent`**。来源: replicator_tutorials/troubleshooting.html
 
-来源：replicator_tutorials/tutorial_replicator_cosmos.html
+## 二、Action & Event 数据生成
 
-## 数据增强
+### Actor SDG（IRA）
 
-支持 NumPy(CPU) 与 Warp(GPU) 自定义增强：`rep.annotators.Augmentation.from_function()` 创建、`rep.AnnotatorRegistry.register_augmentation()` 注册、`rep.annotators.augment()`/`annotator.augment()` 包装 annotator、`augment_compose()` 串联、`writer.augment_annotator()` 用于 writer 侧。示例：RGB 红蓝通道互换、深度加不同 sigma 高斯噪声。
+三扩展协作：**omni.metropolis.pipeline**（OMP，行为框架）、**isaacsim.replicator.agent**（IRA，仿真管理）、**isaacsim.anim.robot.core**（IAR，机器人动画）。零代码 YAML 驱动：UI 加载配置 → Set Up Simulation → Start Data Generation（默认输出 `~/IRA_output`）；Headless：`./python.sh tools/actor_sdg/actor_sdg.py -c <config>`。角色遵循 routine-trigger 循环（空闲时按权重随机行为，触发时执行反应序列）。**迁移：6.0 的 IRA 1.x 相对 5.1 的 0.x 为架构重写——USD 原生 schema、Pydantic v2 校验、行内行为定义、新增行为树支持。**
 
-来源：replicator_tutorials/tutorial_replicator_augmentation.html
+- 配置文件：根键 `isaacsim.replicator.agent` + 版本号，含 environment / character（groups: num、routines 如 wander/patrol/idle、triggers）/ robot / sensor（相机放置策略：瞄准目标、最大覆盖）/ replicator（IRABasicWriter、CosmosIRAWriter、CustomWriter；RGB/分割/包围盒/骨架 annotator）；`seed`、`simulation_duration` 等。
+- Configuration Editor API（`isaacsim.replicator.agent.ui`）：`load/save_config_file()`、`get/update_config()`（点分路径如 `environment.base_stage_asset_path`）、`setup_simulation()`、`start_data_generation()`。
+- CustomWriter 示例：`isaacsim.streaming.rtsp` 的 `RTSPStreamWriter`，每相机独立 writer/端口，`rtsp://localhost:8554/camera_01`，h264 硬编码或 raw。
+- Animated Robot Controller（IAR）：动画回放替代实时物理，自带 Nova Carter/iw.hub/叉车配置，可扩展 YAML；架构：AnimRobot + StateMachine + Actions（`move_to/idle/turn/play_animation/sequence`）+ Drive（全向/差速）+ Behaviors（Wander/Patrol/Halt）。
 
-## 自定义随机化片段（Isaac Randomizers）
+来源: action_and_event_data_generation/tutorial_replicator_agent.html 及 ext_replicator-agent/ 各子页
 
-当内置 randomizer 不够用时的写法集合：直接用 USD `GetAttribute().Set()` 随机灯光；OmniPBR 材质/纹理随机（`UsdShade.MaterialBindingAPI`）；链式依赖随机（先随机托盘再稳定摆放料箱、球面采样相机）；物理填充体积（刚体+碰撞墙+临时改摩擦力）；SimReady 资产变体（`GetVariantSets()`）。
+### Behavior Tree Generation（6.0 新增）
 
-来源：replicator_tutorials/tutorial_replicator_isaac_randomizers.html
+LLM 将自然语言场景描述自动生成 actor 行为树。需要：场景上下文文件、节点目录、元数据 schema、模型配置、输出目录、**NVIDIA API key**。三个核心 API：`setup_workspace()`、`prepare_runtime()`、`generate_behavior_tree()`；支持 UI 示例窗口或纯 Python 脚本两种用法。来源: tutorial_behavior_tree_gen.html
 
-## 在线生成与位姿估计训练
+### Object SDG（IRO）
 
-- **在线生成**（已弃用）：数据不落盘直接喂 PyTorch，把生成包进 `IterableDataset`，`__next__` 中 `orchestrator.step()` → `rgb.get_data(device="cuda")`/`bbox_2d_tight`/`instance_seg` 取数 → 组 batch，训练 Mask-RCNN（ShapeNet 资产）。
-- **位姿估计**（已弃用）：生成 MESH（大量飞行干扰物+碰撞盒）与 DOME（dome 光照背景）两类数据集，YCB 目标物；writer 支持 **DOPE / CenterPose / YCBVideo(PoseCNN)**；关键 API：`get_world_pose_from_relative()`、`apply_body_force()`。运行 `pose_generation.py --num_mesh 30 --num_dome 30 --writer DOPE`。
+`isaacsim.replicator.object`：面向无 3D 经验用户的零代码域随机化。YAML 描述文件三要素：**Mutables**（逐帧随机的对象+分布）、**Harmonizers**（多 mutable 协调约束）、**Settings**（物理/输出/帧数）。支持 UI、Docker/headless、内嵌快速预览；配套 **Chat IRO** 自然语言生成 YAML。输出 RGB、2D/3D 包围盒、分割，并记录帧状态可复现。来源: tutorial_replicator_object.html
 
-来源：replicator_tutorials/tutorial_replicator_online_generation.html、tutorial_replicator_pose_estimation.html
+### 其余扩展
 
-## Agent SDG（人/机器人行为数据）
+- **VLM Scene Captioning**：从 3D ground truth 构建场景图后经 NVIDIA NIM LLM（默认 `meta/llama-3.1-8b-instruct`，可本地 NIM）生成图文对；支持 global/brief/qa 三类 caption、场景图剪枝（`pruning_ratio`）、`attach_label_to_usd` 自动打标。来源: tutorial_replicator_caption.html
+- **Physical Space Event Generation（IRI）**：三类事件——箱体倾倒、火灾烟雾、液体泼洒；属性菜单标记物品（loose/flammable/spillable，支持 `$random_loose_item$`），YAML 定义触发（time/carb_event/physical_event）；输出事件语义标签 + `incidents_report.json`；Python API：`isaacsim.replicator.incident.core`。来源: tutorial_replicator_incident.html
+- **RTX Sensors Placement & Calibration**：`isaacsim.sensors.rtx.placement`（按覆盖需求自动寻优相机位）+ `isaacsim.sensors.rtx.calibration`（导出位姿/FOV 标定元数据）。来源: tutorial_sensors_rtx_placement.html
+- **Event Reactive Actors（6.0 新增）**：IRI 事件经 carb event bus 触发 IRA 角色反应，纯 YAML、无代码耦合——Actor 侧 `event_trigger.event` 字符串须匹配 `isaacsim.replicator.incident.core.events/<事件名>`；触发后按序执行行为列表再恢复 routine；目前仅 Fire/SpillEvent 派发 carb 事件（ToppleEvent 不行）。来源: example_event_reactive_actors.html
+- **Omni Metropolis Pipeline（6.0 新增）**：Action/Event 生态的共享基础层——ConfigurationManager（单一 YAML 分发到各扩展的 async setup）、TriggersManager（time/carb-event/collision 三类内置触发）、AgentsManager（timeline 播放时发现并实例化 agent prim，统一 behavior+trigger 接口）。来源: tutorial_omni_metropolis_pipeline.html
+- **Telemetry & Performance Tracking（6.0 新增）**：记录执行时间、资源占用、文件读写、资产加载等；`--/telemetry/mode=prod|test|dev`（headless 需显式 dev），日志在 `~/.nvidia-omniverse/logs/`；`--/telemetry/enableAnonymousData=false` 关上传。来源: tutorial_telemetry.html
 
-`isaacsim.replicator.agent`（IRA，旧名 omni.replicator.character/agent）模拟人物与 Nova Carter/iw.hub 机器人，服务人员检测/跟踪训练。YAML 配置含 global（seed、时长）、scene、sensor（相机数与摆放）、character/robot（数量、资产、命令、出生区）、response/incident、replicator(writer)。流程：启用扩展→载配置→Set Up Simulation→生成/编辑命令→采数。无头运行：`./python.sh tools/actor_sdg/sdg_scheduler.py -c config.yaml`。输出多相机同步 RGB+2D/3D 框+姿态。
+## 三、专项 SDG
 
-来源：action_and_event_data_generation/index.html、tutorial_replicator_agent.html
+- **Grasping SDG**：自动生成抓取数据集——antipodal 采样候选抓取位姿 → 多阶段执行（pre-grasp/close/lift）→ 物理仿真评估 → 结果记入结构化 YAML（gripper 配置、关节状态、位姿、评估结果）。核心类 `GraspingManager`；UI（Tools > Replicator > Grasping）或 `./python.sh standalone_examples/api/isaacsim.replicator.grasping/grasping_workflow_sdg.py`；示例台 `sdg_grasping_xarm.usd`。来源: synthetic_data_generation/tutorial_replicator_grasping_sdg.html
+- **MobilityGen**：移动机器人数据集工具，支持 Jetbot/Carter（差速）、Spot（四足）、H1（人形）；先生成占据栅格图（`~/MobilityGenData/maps/` YAML+PNG），录制模式含键盘 WASD/手柄遥操与 Random Acceleration / Random Path Following 自动模式；录制仅存轨迹与关节状态，再由 `replay_directory.py` 离线渲染 RGB/深度/分割/法线（需关多 GPU）。**6.0 迁移**：旧录制需用 `migrate_recordings.py` 转 `.npz` 格式。来源: tutorial_replicator_mobility_gen.html
+- **Teleoperation SDG（6.0 新增）**：VR 遥操采集操纵演示用于模仿学习——CloudXR 头显（如 Quest 3）或无硬件 debug 模式（屏上拖拽标记）；支持单/双臂悬浮夹爪（xArm、Dex3）、IK 机械臂（UR3e）、移动底盘+机械臂；Episode Recorder 录 **HDF5**（链级世界位姿、手柄输入通道、OpenXR 头/瞄准位姿、相机轨迹与自定义 USD 属性），回放时经 Replicator writer 生成合成数据集。来源: tutorial_replicator_teleop_sdg.html
 
-## Object SDG（IRO）
+## 6.0 相对 5.1 的关键变化速览
 
-`isaacsim.replicator.object`：零代码 YAML 描述随机化场景。核心概念 **Mutables**（逐帧随机的物体/灯光/相机）、**Harmonizers**（约束多个 mutable 联动）、可随机属性分布（range/folder 等）。逐帧流程：解析符号→更新 USD→物理仿真→采图→存状态（支持场景复原重采样）。UI 或 Docker（`--/config/file=`）运行；输出 RGB(JPG)、分割 PNG、2D/3D 框、元数据。
-
-来源：action_and_event_data_generation/tutorial_replicator_object.html
-
-## VLM 场景描述与事件生成
-
-- **VLM Captioning**：基于 3D 真值构建场景图（节点=物体、边=空间关系），经 NVIDIA NIM 的 LLM（默认 llama3-8b/70b-instruct，可本地）生成图文对；YAML 配置相机、caption 风格（brief/full、全局/QA）、场景图裁剪；输出 JSON 场景图、caption、可视化叠加、点云。
-- **事件生成（IRI）**：三类自发事件——物体倾倒、起火、液体泼洒；流程：Event Scene Tagger 标记 loose/flammable/spillable → YAML 定义事件（target、time 触发、参数）→ Record Events；输出语义标签（如 `incident_toppled_item`）、事件日志 YAML、SDG 数据，可与 IRA 联动生成人物响应。
-
-来源：action_and_event_data_generation/tutorial_replicator_caption.html、tutorial_replicator_incident.html
-
-## RTX 传感器摆放标定
-
-`isaacsim.sensors.rtx.placement`：按覆盖率需求与场景约束自动优化相机位姿；标定功能导出位姿、朝向、FOV 多边形等元数据为 JSON，并可视化每台相机覆盖范围。适合仓库/零售多相机部署规划。
-
-来源：action_and_event_data_generation/tutorial_sensors_rtx_placement.html
-
-## 抓取 SDG 与 MobilityGen
-
-- **抓取 SDG**：`GraspingManager` API + UI（Tools > Replicator > Grasping）。配置夹爪 USD/关节/预抓取位与多阶段抓取相位；**antipodal 采样器**生成候选抓取位姿（旋转数、standoff、开口、扰动、seed 可配）；对每个候选按相位跑物理仿真并记录成败指标，YAML 保存配置可批处理。
-- **MobilityGen**：移动机器人数据采集工具，支持差速（Jetbot/Carter）、四足（Spot）、人形（H1）。流程：Occupancy Map 扩展生成占据图（PNG+YAML）→ UI 录制轨迹（键盘/手柄遥操或随机加速/随机路径）→ `replay_directory.py --render_interval N` 离线回放渲染 RGB、深度、语义/实例分割、法线。
-
-来源：synthetic_data_generation/tutorial_replicator_grasping_sdg.html、tutorial_replicator_mobility_gen.html
-
-## 排障要点
-
-深度噪声→关抗锯齿；材质加载不及时/残影→`rt_subframes≥2` 并按需增大；黑图→`--reset-user` 重启；掉帧→启动加 `--/exts/isaacsim.core.throttling/enable_async=false`；尽量避免 `rep.new_layer()`；Windows 写 S3 用环境变量存凭证；旧扩展名统一迁移到 `isaacsim.replicator.agent`。
-
-来源：replicator_tutorials/troubleshooting.html
+1. 扩展改名：`omni.replicator.character`/`omni.replicator.agent` → `isaacsim.replicator.agent`；IRA 1.x 架构重写（USD schema、Pydantic v2、行为树）。
+2. 新增教程/能力：SDG Workflows 端到端范例、Behavior Tree Generation（LLM 生成行为树）、Event Reactive Actors（事件↔角色联动）、Omni Metropolis Pipeline（统一配置/触发/agent 基础层）、Telemetry、Teleoperation SDG（VR+HDF5）。
+3. 新 API 模式：`rep.functional.*` 函数式接口、`rep.backends`（DiskBackend）、`rep.rng.ReplicatorRNG` 种子随机、`hydra_texture.set_updates_enabled()` 渲染门控。

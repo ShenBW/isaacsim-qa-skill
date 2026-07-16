@@ -1,74 +1,61 @@
-# 资产导入与机器人搭建
+# 资产导入与机器人搭建（6.0.1）
 
-## 支持的格式总览
+## 一、格式与导入器（含 Newton schema 变化）
 
-- **USD** 是 Omniverse 场景标准格式，材质用 MDL；FBX/OBJ/glTF 可经 Asset Converter 转 USD。
-- 机器人描述格式：**URDF 导入器**、**MJCF 导入器**（均默认启用、已开源）、**Onshape 导入器**（云端 CAD）、**CAD 转换器**；ShapeNet 导入器已弃用。
-- 反向导出：**USD → URDF Exporter**（`isaacsim.asset.exporter.urdf`，File > Export to URDF）。参数：输出路径、Mesh Directory Path（默认与 URDF 同目录，mesh 存入 meshes 子目录）、Mesh Path Prefix（如 `file://`）、Root Prim Path、Visualize Collisions。限制：URDF 不支持运动学闭环（有闭环则转换失败）；关节缺少 parent/child（如未连接的末端执行器）会导致失败。
-- 注意：Isaac Sim 5.1.0 已停止支持。
+- **支持格式**：Asset Converter 处理 `.fbx`/`.obj`/`.gltf`；材质用 `.MDL`；机器人格式为 URDF、MJCF；另有 Onshape Importer、CAD Converter（外部扩展）。**ShapeNet Importer 已弃用**。
+- **URDF Importer**（`isaacsim.asset.importer.urdf`，File > Import）：选项含 Collision From Visuals（Convex Hull/Decomposition/包围球/包围盒）、Allow Self-Collision、Robot Type（Manipulator/Wheeled/Humanoid 等）、Base Type（Source/Fixed/Mobile）、Merge Mesh、ROS package 路径映射。**6.0 变化**：根 link 同时写入 `UsdPhysics.ArticulationRootAPI` 与 `NewtonArticulationRootAPI`；自碰撞改用 `newton:selfCollisionEnabled`；mimic 关节走 `NewtonMimicAPI`；joint 属性同时映射 PhysX 与 MJCF schema，实现多物理引擎；输出遵循 Isaac Sim Asset Structure，mesh 可实例化。
+- **MJCF Importer**（`isaacsim.asset.importer.mjcf`）：选项类似，另有 Import Scene（带入 MuJoCo 仿真设置）；actuator 的 gain/bias 参数映射到 drive；**限制**：同一 body 对之间多个单轴关节会尝试转 D6，轴冲突可能丢 DOF。6.0 Newton schema 变化与 URDF 相同。
+- **URDF Exporter**（`isaacsim.asset.exporter.urdf`，File > Export to URDF）：可设 mesh 目录/URI 前缀、根 prim。**限制**：不支持运动学闭环、孤立关节。
+- **教程**：import_urdf（UR10，GUI/Python API/ROS 2 节点三种方式，导入后需查看 collider 并调 gain）、export_urdf、import_mjcf、shapenet_importer。
 
-来源：importer_exporter/importers_exporters.html、formats.html、ext_omni_exporter_urdf.html
+来源: importer_exporter/importers_exporters.html、ext_isaacsim_asset_importer_urdf.html、ext_isaacsim_asset_importer_mjcf.html、ext_omni_exporter_urdf.html、formats.html、import_urdf.html
 
-## URDF 导入器关键选项
+## 二、6.0 新工具
 
-入口 File > Import。选项：
+- **Robot Inspector Window（新）**（Window > Robot Inspector，`isaacsim.robot.schema.ui`）：查看运动学结构，三种层级模式（Flat/Tree/MuJoCo）；三种非破坏性 mask 操作——Deactivate（禁用）、Bypass（禁用并重连链）、Anchor（固定到世界）；更改存于会话临时层不落盘；视口关节连线可视化；提供 `HierarchyMode`/`MaskingState`/`MaskingOperations` Python API。
+- **Robot Poser（新）**（Tools > Robotics > Robot Poser）：创建/编辑/应用命名姿态，交互式 IK 拖拽末端；停止仿真时直接 teleport 关节、运行时作为 drive target；IK 不可达时 link 红色高亮；姿态按 Robot Schema 存为 USD prim 随资产携带。
+- **Self-Collision Detector（新）**（Tools > Robotics > Asset Editors）：静态扫描重叠碰撞对，表格中勾选 Filtered Pair 屏蔽，支持批量、搜索、视口高亮、含环境物体；适合处理刚导入的 URDF/MJCF 及灵巧手密集碰撞体。
+- **Asset Transformer（6.0 新增，重点）**（Tools > Robotics > Asset Editors > Asset Transformer）：基于规则流水线批量把 USD 转成优化的仿真就绪结构，解决 schema 分层、几何/材质去重、层级重组、组合弧生成四类问题。规则顺序执行，配置可存 JSON profile，自带 "Isaac Sim Structure" 默认档（13 步）；输出 Transform Report（逐规则日志）。
+  - **API**：`AssetTransformerManager.run(input_stage, profile, package_root)` 返回 `ExecutionReport`；`RuleProfile`/`RuleSpec`（name/type/destination/params/enabled）、`RuleRegistry`、自定义规则继承 `RuleInterface`；`RuleProfile.from_dict()` 读 JSON。
+  - **规则四类**：Core（SchemaRoutingRule、PropertyRoutingRule、PrimRoutingRule、RemoveSchemaRule）、Performance（MaterialsRoutingRule、GeometriesRoutingRule 去重+实例化）、Structure（FlattenRule、VariantRoutingRule、InterfaceConnectionRule）、Isaac Sim（RobotSchemaRule、PhysicsJointPoseFixRule、MergeMeshRule、Urdf/MjcToPhysx 转换规则支撑多物理引擎）。
 
-- **模型放置**：在 Stage 中创建 / 作为 Reference 添加；可选 Set as Default Prim、Clear Stage。
-- **Base 类型**：Moveable base（轮式机器人）/ Static base（机械臂，root_joint 固定）。
-- **密度**：对无质量的 link 应用默认 density；设 0 由物理引擎自动计算。
-- **关节驱动**：Drive Type 选 Acceleration（与质量无关）或 Force（弹簧-阻尼）；Target Type 为 None/Position/Velocity；增益可直接填 Stiffness/Damping 或用 Natural Frequency 自动计算。教程示例：stiffness=1047.19751、damping=52.35988。默认遵循 mimic 标签，可勾选 Ignore Mimic；支持 Ctrl/Shift 多选批量编辑关节。
-- **碰撞**：Collision From Visuals（无碰撞数据时由视觉网格生成）、Collider Type 为 Convex Hull 或 Convex Decomposition、Self-Collision 开关、圆柱转 Capsule 选项。
-- 导入结果符合 Isaac Sim 资产结构约定，mesh 已可 instanceable；特殊字符替换为下划线。
-- 导入方式：GUI、Python（`ImportConfig` + `URDFParseAndImportFile`）、Linux 下 File > Import from ROS 2 URDF Node（原生支持 XACRO）。
-- 经验：移动机器人轮子用 Velocity drive、转向关节用 Position drive；力矩控制机器人驱动设 None。
+来源: robot_setup/robot_inspector.html、robot_poser.html、ext_isaacsim_robot_setup_collision_detector.html、asset_transformer.html、asset_transformer_api.html、asset_transformer_rules.html
 
-来源：ext_isaacsim_asset_importer_urdf.html、import_urdf.html
+## 三、编辑与检查工具
 
-## MJCF 导入
+- **Gain Tuner**：四种测试（Snap-to-Limits、正弦、阶跃、Stress Test 的 Random Walk/Adversarial 模式），测量 vs 指令曲线图；支持按自然频率调参、关节分组、RNG 种子复现。公式：Effort = Kp·(位置误差) + Kd·(速度误差)。
+- **Robot Assembler**：用物理仿真的固定关节把两资产合并（机械臂+夹爪等），指定 attach 点（Link/Site）、90° 旋转微调、"Assemble and Simulate" 验证；两种模式（改资产生成 variant / 只改当前 stage）；`RobotAssembler` API（`begin_assembly/assemble/finish_assemble`）。
+- **Mesh Merge Tool**：合并同一刚体下多 mesh（已标注将由 Scene Optimizer 取代）。
+- **Inspector 工具**：Joint Inspector、Physics Inspector（仿真中滑杆验证 DOF）、Simulation Data Visualizer。
+- **弃用：Robot Wizard 及其教程已弃用**（robot_wizard.html）。
 
-选项与 URDF 类似：Moveable/Static base、默认 density（0=引擎默认）、Visualize collision geometry、Self-collision（默认关闭，推荐保持）。示例资产 `nv_humanoid.xml`；Python 用 `MJCFCreateImportConfig` + `import_config.set_fix_base(False)`。link/joint 名特殊字符替换为下划线，下划线开头会加前缀 'a'。导入后通过 DriveAPI 调整 stiffness/damping 区分位置/速度控制。
+来源: robot_setup/ext_isaacsim_robot_setup_gain_tuner.html、assemble_robots.html、ext_isaacsim_util_merge_mesh.html、robot_setup/index.html
 
-来源：ext_isaacsim_asset_importer_mjcf.html、import_mjcf.html
+## 四、13 篇 Robot Setup 教程脉络与关键参数
 
-## Robot Wizard（Beta）
+脉络：T1 场景搭建 → T2 组装简单机器人 → **T3 关节化**（刚体+revolute 关节，轮子速度控制用高 damping=1e4、零 stiffness、目标速度 200 rad/s；Articulation Root 提升精度与大质量比容忍；注意控制器用弧度、USD 属性用角度）→ T4 相机与传感器 → **T5 移动机器人（叉车）**（升降 prismatic：Damping 1e4/Stiffness 1e5；转向 Damping 100/Stiffness 1e5；轮子用圆柱碰撞近似防颠簸；后轮速度 -200 前进）→ T6 组装机械臂 → **T7 配置机械臂（UR10e+Robotiq）**（physx.usda 子层；Solver 位置迭代 64、速度迭代 4；Sleep/Stabilization 阈值调低；指尖摩擦 1.0；夹爪 Max Force 200）→ T8 生成机器人配置文件 → T9 抓放示例 → T10 闭环结构 → **T11 关节增益调参（UR10）**（Gain Tuner：肩/肘 stiffness 5e4–5e5、腕 50–500、damping 0–50；必须设速度上限否则求解器不稳）→ **T12 资产优化（Jetbot）**（mesh 合并+Instanceable 实例化，40→64 FPS；灯光≤10、简化碰撞形状）→ **T13 腿式机器人（H1）**（按 policy 环境定义设 stiffness/damping/effort/velocity limit，rad↔deg 换算 S_deg=S_rad×π/180；armature 与关节摩擦在 Raw USD 属性；Newton 对反向关节可能报错需交换 body；参考资产 Isaac/Samples/Rigging/H1/h1_rigged.usd）。
 
-处于 Beta，推荐用于 CAD 导入的、link/joint 较少的简单机器人。流程：Add Robot（选类型、命名、父 link）→ Prepare Files（指定保存目录）→ Robot Hierarchy（按"如何运动"组织 link 与网格父子关系）→ Add Colliders（选碰撞近似）→ Add Joints and Drives → Save Robot（指定 articulation root，可加最小环境）。生成分层文件：`configurations/<name>_base.usd`（网格层级）、`<name>_physics.usd`（刚体/碰撞/关节/驱动 sublayer）、`<name>_robot.usd`（robot schema），主文件 `<name>.usd` 含变体。限制：UI 无法手工建 collider，额外物理需直接改 USD；翻页前不落盘修改。
+来源: robot_setup_tutorials/tutorial_gui_simple_robot.html、rig_mobile_robot.html、tutorial_configure_manipulator.html、joint_tuning.html、optimizing_asset.html、tutorial_rig_legged_robot.html
 
-来源：robot_setup/robot_wizard.html
+## 五、OpenUSD & Tuning Best Practices 系列（6.0 新增，7 篇）
 
-## 编辑工具
+以 Inspire Hand 灵巧手为贯穿案例（`IsaacSim/Samples/Rigging/Inspire/`），4 个检查点渐进：
 
-- **Merge Mesh Utility**：合并刚体内多网格并保留材质，减少 prim 数。
-- **Gain Tuner**（robot_setup/ext_isaacsim_robot_setup_gain_tuner.html）：基于 `Effort = Kp(pos_des−pos_cur) + Kd(vel_des−vel_cur)`。模式判定：Position drive 需 stiffness>0；Velocity drive 需 stiffness=0；二者为 0 则 None；Mimic 由他关节驱动。支持直接编辑增益或按 Natural Frequency + Damping Ratio（在 home 位形计算）。Gains Test 提供正弦（幅值/偏移/周期/相位）与阶跃（min/max）轨迹，按关节分组（sequence）测试并对比实际位置/速度。
-- **Robot Assembler**（robot_setup/assemble_robots.html）：用物理 fixed joint 组合两个 USD 资产（机械臂+夹爪、机器人+移动底座）。流程：加载资产 → 选 base/attach robot → 指定 attach point（Robot Link 或 Reference Point）→ 用旋转按钮/gizmo 对位 → 仿真验证 → 保存（可生成带 variant set 的配置）。仅时间线播放时生效；静止组合无需此工具。Python：`isaacsim.robot_setup.assembler.RobotAssembler` 的 `begin_assembly()/assemble()/finish_assemble()`。
-- 检查工具：Physics Inspector、Simulation Data Visualizer。
+1. **Setup**：下载资产、打开起始场景，前置要求（USD 基础、刚体物理）。
+2. **Asset Structure**：讲解 **Asset Structure 3.0**——geometries.usd / materials.usda / robot.usda / instances.usda / base.usda / physics.usda（引擎无关）/ physx.usda（引擎特定）；根文件用 Physics variant（none/physics/physx）切换后端，支持 MuJoCo/PhysX 多引擎共存。
+3. **Inspect**：Joint Visualizer、Robot Inspector、Physics Debugger（质心与主惯性轴）、Collider 可视化；检查关节类型、质心位置、惯性合理性、碰撞策略。
+4. **Collider Pairs**：开启自碰撞→用 Self-Collision Detector 找重叠对→Filtered Pair 屏蔽；过滤写在中性 physics.usda 层；过滤过度会穿模、不足会不稳。
+5. **Joint Drive**：区分"限制"与"增益"；mimic 关节设非柔顺（damping ratio=0、自然频率=0）；最大力矩由握力×力臂×传动比推算（掌指 1.68 Nm），最大速度按厂商规格（260 deg/s）。
+6. **Joint Gains**：Gain Tuner 阶跃/正弦测试；先调 stiffness（damping 从 0 起），damping 约低一个数量级；目标接近临界阻尼。
+7. **Dexterous Hand 实践**：总结全流程，产出可用于 Isaac Lab 的生产级灵巧手资产。
 
-来源：robot_setup/editing_tools.html 及上列各页
+来源: openusd_tuning_tutorials/tutorial_01_setup.html 至 tutorial_07_practice.html
 
-## 13 篇教程递进脉络
+## 六、资产校验与排障
 
-（robot_setup_tutorials/index.html）初级（轮式）：1 Stage Setup → 2 组装简单机器人 → 3 Articulate 基础机器人 → 4 相机与传感器 → 5 移动机器人 rig；中级（机械臂）：6 Setup Manipulator → 7 Configure Manipulator → 8 生成机器人配置文件 → 9 Pick & Place；高级：10 闭环结构 rig → 11 关节增益调优 → 12 资产优化 → 13 腿式机器人 locomotion policy rig。
+- **Asset Validation**（Window > Asset Validator，`isaacsim.asset.validation`）：三类规则——IsaacSim.PhysicsRules（11 条：关节驱动、速度限制、质量、碰撞体、articulation）、IsaacSim.RobotRules（10 条：命名规范、RobotAPI/JointAPI/LinkAPI、schema 分层）、IsaacSim.SimReadyAssetRules（3 条：材质层级）；报告带自动修复建议。
+- **Troubleshooting**：机器人"爆炸"多因关节处碰撞体重叠；导入常见问题（材质重名、body/joint 按字母序需重排、非零初始 target 导致第一帧乱动、max force 不合理）；控制器问题（Robotiq 并联机构 link 不动、差速轮摩擦不足打滑）；速查表：关节不动查限位/增益、抖动降增益加子步、穿地调 contact offset、性能差简化碰撞体。
 
-- **T3 articulation 绑定**（tutorial_gui_simple_robot.html）：对车身+双轮创建 Revolute Joint（轴设 Y，调 Local Rotation 对齐），加 Angular Drive（轮速控制：Damping=1e4、Target Velocity=200 rad/s），在根 prim 加 **Articulation Root** 提升效率，再经 Tools > Robotics > Omnigraph Controllers > Joint Velocity 建控制图。注意：articulation controller 用弧度，USD 属性用度。成品对照 `mock_robot_rigged` 资产。
-- **T4 相机/传感器**（tutorial_gui_camera_sensors.html）：Create > Camera 后拖到机器人 body 下随动；建议挂在中间 prim 上便于归零复位；示例前视相机 T=(-6,0,2.2)、R=(0,-80,-90)；用 Camera Inspector 预览，双 viewport 验证；方法可推广至其他传感器。
-- **T5 移动机器人 rig**（rig_mobile_robot.html）：以叉车为例——分析 DOF（4 被动滚轮 revolute、1 主动升降 prismatic、2 主动后轮/转向）→ 按"父 prim 动则子网格随动"整理层级并赋刚体 → 碰撞用 convex decomposition，轮子用圆柱 collider → 建关节与驱动：升降 prismatic（Damping=10000、Stiffness=100000）、后轮角驱动（Damping=10000、Stiffness=100）、转向（Damping=100、Stiffness=100000），转向限位 ±60° → 加 articulation root。防自碰撞。
-- **T7 机械臂配置**（tutorial_configure_manipulator.html）：UR10e + Robotiq 2F-140——位置迭代提至 64、速度迭代 4、sleep threshold 0.00005、stabilization threshold 0.00001；夹爪指尖加刚体材料（静/动摩擦均 1.0）；finger_joint 最大力矩 200；Gain Tuner 推荐 Nat. Freq.=0.5、Damping Ratio=1.0。提高迭代增精度但降性能；增大 max force 可能需提高仿真步频防穿透。
-- **T11 关节调参**（joint_tuning.html）：位置驱动——先 damping=0 只调 stiffness，收敛后回退一个数量级作基线，再加约低一个数量级的 damping；速度驱动相反——stiffness=0 只调 damping，带载再加约 10%。目标：超调 ≤1%。工业机器人可将 stiffness 加倍近似完美跟踪，并设最大关节速度限制；有重力补偿的机器人可禁用重力；按关节组分别调再整合。
-- **T10 闭环结构**：排障页建议将闭环拆为多 articulation 加约束，比单一复杂链更稳定。
-- **T12 资产优化**（optimizing_asset.html）：Jetbot 示例经 Mesh Merge 从 40 FPS 提至 64 FPS；对重复部件（左右轮）启用 **Instanceable** 共享内存；重组为 Visual/Physics 分 scope 的分层结构；减少灯光与半透明材质；碰撞体简化（轮子用圆柱代 mesh）；调 contact 数量平衡精度与开销。
-- **T13 腿式机器人 policy rig**（tutorial_rig_legged_robot.html）：以 H1 人形机器人为例，为外部 policy（ROS 等）部署准备资产——按 policy 环境定义文件设初始关节角（弧度转角度，如 left_hip_pitch −0.28 rad ≈ −16°，经 Joint State API 写入）；配置 stiffness/damping、velocity/effort limit、armature、friction（增益同样需 rad→deg 换算）；用 SingleArticulation API 脚本校验参数一致。参考资产 `Isaac/Samples/Rigging/H1/h1_rigged.usd`；标准 Isaac Lab 部署可由 Policy Controller 类自动完成运行时 rig。
+来源: robot_setup/asset_validation.html、robot_setup/troubleshooting.html
 
-## 资产校验
-
-扩展 `isaacsim.asset.validation`（默认启用），Window > Asset Validator。三类规则：**PhysicsRules**（关节/质量/碰撞/articulation 配置，如"非固定关节必须有 Drive API 或 Mimic API"）、**RobotRules**（命名规范、RobotAPI、关系定义、物理属性的 layer 组织）、**SimReadyAssetRules**（材质层级规范、禁止嵌套）。
-
-来源：robot_setup/asset_validation.html
-
-## 排障
-
-- **机器人爆炸/不稳**：检查碰撞网格互相穿插（尤其关节枢轴处）、关节限位被违反、articulation 链关节顺序；调 timestep、solver iterations、stiffness/damping——过高振荡、过低到不了目标，用 Gain Tuner 优化。
-- **控制器问题**：并联机构夹爪（如 Robotiq）可能有不动的 link 需手工修正；差速轮摩擦过低打滑、过高行为异常。
-- **导入/导出坑**：URDF 转换可能把 collider 网格混入 visual、body/joint 按字母序重排；导出器对无界限位写入 infinite 值可能导致解析失败；同名材质会被当作同一资产（忽略参数差异）。
-- **闭环结构**：拆成多个 articulation 加约束更稳。
-
-来源：robot_setup/troubleshooting.html
+**弃用项汇总**：Robot Wizard 及其教程、ShapeNet Importer、Mesh Merge Tool（将由 Scene Optimizer 取代）。

@@ -25,8 +25,8 @@ SOFTWARE.
 NOTE ON THIRD-PARTY CONTENT
 
 The files under the `references/` directory are Chinese-language summary
-notes derived from the NVIDIA Isaac Sim 5.1.0 official documentation
-(https://docs.isaacsim.omniverse.nvidia.com/5.1.0/). The original
+notes derived from the NVIDIA Isaac Sim official documentation
+(https://docs.isaacsim.omniverse.nvidia.com/). The original
 documentation is copyrighted by NVIDIA Corporation. Those summaries are
 provided for learning and reference purposes only and are NOT covered by
 the MIT License above; NVIDIA's own terms apply to the underlying

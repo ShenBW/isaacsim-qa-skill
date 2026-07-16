@@ -1,55 +1,39 @@
-# 数字孪生与 Isaac Cortex
+# 数字孪生与 Isaac Cortex（6.0.1）
 
-## 数字孪生应用场景
+## 1. 仓储物流工具集
 
-Isaac Sim 5.1.0 的数字孪生文档将各类机器人工具整合为协同工作的系统示例，包含三大板块：**仓储物流**（仓库生成、传送带工具、静态资产、cuOpt 路径优化）、**Cortex**（协作机器人决策框架的递进式教程，从概念到 Franka/UR10 实例）以及**地图制作**（占用栅格图生成）。另设专门的故障排除页，按 Warehouse Creator（组件可见性、布局、纹理）、传送带（物理应用、碰撞、动画速度）、Cortex（decider network 初始化、资产加载路径）、占用图（碰撞几何缺失、raycast 参数、分辨率）分类给出诊断方法，强调检查控制台日志与资产可用性。
+**Warehouse Creator**（`omni.warehouse.creator.ui` + 无头 API 包 `omni.warehouse.creator.api`）：将 2D 网格平面图转换为 USD 仓库场景，基于 Modular Warehouse 资产包。提供俯视 2D 网格编辑器（自由绘制/直线/框选填充、对称、布尔运算合并/减除/翻转/旋转）、单元分组（每组生成独立 root prim）、生成后可切换墙面/中心瓦片变体（装卸码头、窗户等）并可开关立柱。工作流：块库选资产 → 网格上绘制 → 分组 → Generate Warehouse。**相对 5.1：这一 2D 草图式生成器为 6.0 重做的新版工具（5.1 为旧式参数化 Warehouse Creator）。**
+来源: https://docs.isaacsim.omniverse.nvidia.com/6.0.1/digital_twin/warehouse_logistics/ext_omni_warehouse_creator.html
 
-来源：https://docs.isaacsim.omniverse.nvidia.com/5.1.0/digital_twin/index.html 、digital_twin/troubleshooting.html
+**传送带**（`isaacsim.asset.gen.conveyor.ui`）：将刚体一键转为传送带（Create > Isaac Sim > Warehouse Items > Conveyor），生成 OmniGraph 节点控制速度方向/大小、贴图动画，Curved 模式下角速度沿 Direction 向量（旋转轴）施加。附 Conveyor Track Builder，内置 50+ 预制轨道件（直段/弯道/分流/坡道），支持 JSON 自定义件库。另有 `standalone_examples/conveyor_belt` 基于 Warp 直接计算摩擦力的替代方案，适合多带接触场景。与 5.1 基本一致。
+来源: digital_twin/warehouse_logistics/ext_isaacsim_asset_gen_conveyor.html
 
-## Warehouse Creator 仓库生成
+**静态仓库资产**：Window > Browsers > NVIDIA Assets → Industrial > Buildings > Warehouse，拖拽即以引用方式加载。注意多数资产为厘米单位，需将缩放设为 0.01（可在父 prim 上批量设置）；资产仅视觉，物理属性（刚体/碰撞体）须自行添加，或改用带物理与语义标注的 SimReady 资产。推荐通过 USD 引用 + 本地增量做定制。
+来源: digital_twin/warehouse_logistics/tutorial_static_assets.html
 
-`omni.warehouse_creator` 扩展用模块化资产构建自定义形状仓库。经 Window > Extensions 安装后，从 Tools > Modular Warehouse Creator 启动，点击 Build Warehouse 进入视口绘制模式：按**逆时针**放点，点自动对齐仓库瓷砖尺寸，回到起点闭合轮廓。之后可在属性面板为墙体选择瓷砖样式（装卸台、通道板等，按直墙/内外角/中心件分类，需将选择模式切为 Component），并通过 Edit Column Placement 启用/禁用柱子（禁用显示半透明绿色，支持 Flip All）。注意：避免线条交叉、点距过近；建议本地下载 Isaac 资产以加速创建。
+**cuOpt 路径优化**：通过 `omni.cuopt.service`（封装服务、格式化请求）与 `omni.cuopt.visualization`（路点图、语义区域可视化）集成，需自行部署 cuOpt 服务器并启用 `omni.cuopt.examples`。四个示例：创建路点网络、简单代价矩阵求解、JSON 加权路点图、含高代价语义区域的仓内运输。
+来源: digital_twin/warehouse_logistics/logistics_tutorial_cuopt.html
 
-来源：digital_twin/warehouse_logistics/ext_omni_warehouse_creator.html
+## 2. RTSP 相机流（6.0 新增）
 
-## 传送带工具
+扩展 `isaacsim.streaming.rtsp`：将场景相机以 RTSP 直播，内置进程内 RTSP 服务器，**无需外部 mediamtx**；用 NVENC 硬编 H.264，VLC/ffplay/GStreamer/OpenCV 均可拉流。OmniGraph 用法：`OnPlaybackTick → IsaacCreateRenderProduct → RTSPCameraHelper`，配置相机 prim、端口（默认 8554）与挂载路径（默认 `/stream`），Play 后访问 `rtsp://localhost:8554/stream`；也可用 og.Controller 以 Python 搭建，或经 `RTSPStreamWriter` 走 Replicator 流程。编码：H.264（默认，支持逐帧 SEI 仿真时间戳）/ Raw RGBA（`useRawEncoding=true`，不支持 SEI）。限制：每路流需独立端口；首帧渲染后服务器才启动；编码失败进入 failed 状态需重启时间线。**此功能为 6.0 新增，5.1 无对应能力。**
+来源: digital_twin/rtsp_camera_streaming.html
 
-传送带扩展可将刚体变为传送带，提供两种方式：**基础节点**——选中刚体/网格后经 Create > Isaac Sim > Warehouse Items > Conveyor 创建 OmniGraph 节点，可配置速度、方向、曲线标志、纹理动画（曲线段为真时施加角速度而非线速度）；**Conveyor Track Builder**（Tools 菜单）——从预置资产库拼装完整传送带系统，提供 8 项配置（滚筒/皮带/双层样式、轨道类型、曲率、高程、变体），内置 49+ 种轨道变体，并支持自定义数据集（USD 需设默认 prim、原点沿 X 轴对齐、端点位于 Z=0、独立材质）。
+## 3. 占用图（Mapping）
 
-来源：digital_twin/warehouse_logistics/ext_isaacsim_asset_gen_conveyor.html
+扩展 `isaacsim.asset.gen.omap`（默认启用，与 5.1 相同）：基于物理碰撞几何，在指定高度切片生成 2D 二值占用图。参数：Origin（必须位于空闲区）、上下边界、Cell Size（米/像素）；提供 CENTER TO SELECTION / BOUND SELECTION 快捷定位，可切换 PhysX 碰撞近似或原始三角网格。CALCULATE 计算后 VISUALIZE IMAGE 预览，可自定义占用/空闲/未知配色、旋转与坐标系，导出 PNG/YAML（可直接用于 ROS Nav2）。支持 Python/standalone 编程调用。排障：场景需有碰撞几何，漏区检查 raycast。
+来源: digital_twin/ext_isaacsim_asset_generator_occupancy_map.html
+排障页: digital_twin/troubleshooting.html（覆盖 Warehouse Creator 缺件/贴图、传送带穿透与速度、Cortex 资产加载、占用图缺区等）
 
-## 静态仓库资产
+## 4. Cortex 框架与两个案例
 
-教程演示用 NVIDIA 资产浏览器（Window > Browsers > NVIDIA Assets）搭建仓库：导入 Warehouse 建筑、货架、货物堆（如 WarehousePile_A04）。关键点：美术团队制作的 NVIDIA 资产常以厘米为单位，需缩放 0.01；纯视觉资产需手动添加刚体与碰撞体才能参与仿真，推荐在新 Stage 中制作带物理配置的变体后保存复用；**SimReady 资产**自带语义标签与物理配置，可直接用于数字孪生。
+**重要变化：Cortex 自 Isaac Sim 6.0.0 起已弃用，将在后续版本移除**（5.1 中仍为正常功能），官方建议迁移至 py_trees（行为树）或 transitions（状态机）。
 
-来源：digital_twin/warehouse_logistics/tutorial_static_assets.html
+**框架概述**：围绕"信念世界"（belief world）的 60Hz 六阶段流水线：感知 → USD 世界建模 → 逻辑状态监控 → 决策（Decider Network）→ 命令 API → 底层控制；信念仿真与真实世界分离，可先全仿真验证再接实机。核心概念：决策器网络是有向无环图，根节点每周期经 `decide()` 返回 `DfDecision` 逐层下溯到叶节点；Monitor 每周期更新逻辑状态；上下文继承 `DfLogicalState` 持有命令 API。关键 API：`DfNetwork`、`DfDecider`（enter/decide/exit）、`DfStateMachineDecider`、`DfStateSequence`。
+来源: cortex_tutorials/tutorial_cortex_1_overview.html、tutorial_cortex_2_decider_networks.html
 
-## cuOpt 物流优化集成
+**案例一：Franka 堆方块**：按序堆四色方块成塔，人为挪动方块时可反应式重规划。顶层 `BlockPickAndPlaceDispatch` 按"塔是否完成/夹爪是否持块"分派 pick / place / go home；pick 与 place 各为 RLDS 优先级序列（`DfRldsDecider`，鲁棒逻辑动力系统），原子抓放动作用锁定状态机防中断；`BuildTowerContext` 监控感知、塔构型、夹爪与碰撞抑制。运行：`isaac_python franka_examples_main.py --behavior=block_stacking_behavior`。
+来源: cortex_tutorials/tutorial_cortex_4_franka_block_stacking.html
 
-NVIDIA cuOpt 是路径优化求解服务，支持成本矩阵（欧氏距离）与加权路网图（适合室内）两种问题表示。集成靠三个扩展：`omni.cuopt.service`（与服务通信、数据预处理）、`omni.cuopt.examples`（四个递进示例：创建网络、简单成本矩阵、简单路网图、仓库内运输演示）、`omni.cuopt.visualization`（路网与语义区域可视化）。流程为：建节点/边构成路网 → 加载订单、车队与语义区域（标记高成本规避区）→ 调用 cuOpt 求解 → 在视口可视化最优路线。
-
-来源：digital_twin/warehouse_logistics/logistics_tutorial_cuopt.html
-
-## 占用栅格图生成
-
-Occupancy Map 扩展基于场景物理碰撞几何，在给定高度生成"占用/空闲"二值地图。经 Tools > Robotics > Occupancy Map 打开，参数含：Origin（必须位于未占用位置，其 Z 值决定采样高度）、上下边界、Cell Size（米/像素）。可用 CENTER TO SELECTION / BOUND SELECTION 自动定位，CALCULATE 生成，VISUALIZE IMAGE 预览并自定义占用/空闲/未知颜色，支持 Stage 与 ROS 坐标转换及 180° 旋转。前提：几何体必须启用碰撞。配套 Block World Generator 可将占用图反向生成 3D 可碰撞环境。
-
-来源：digital_twin/ext_isaacsim_asset_generator_occupancy_map.html
-
-## Cortex 决策框架
-
-**概览**：Isaac Cortex 旨在让协作机器人开发"像游戏开发一样简单"，核心是区分机器人内部的 belief 仿真与外部现实（仿真或实体），以 60Hz 执行六阶段流水线：感知 → 世界建模（写入 USD）→ 逻辑状态监控 → 决策（decider network）→ 命令 API → 底层控制同步。**Commander** 抽象按关节子集（如 Franka 的手臂与夹爪）暴露任务级命令接口。教程面向 standalone Python 工作流。
-
-来源：cortex_tutorials/tutorial_cortex_1_overview.html
-
-**Decider network 概念**：由 `DfDecider` 节点构成的有向无环图（`DfNetwork`），每个周期从根节点经 `decide()` 逐层选择子节点直至叶节点；节点激活/失活时调用 `enter()`/`exit()`。`DfContext` 承载逻辑状态监控变量与机器人命令 API。与状态机（`DfState.step()`）可通过 `DfStateMachineDecider` 互相嵌套，`DfStateSequence` 实现顺序状态链，从而构建比传统状态机更具反应性的分层行为。
-
-来源：cortex_tutorials/tutorial_cortex_2_decider_networks.html
-
-**Franka 积木堆叠**：4 块彩色积木按预定顺序堆塔，用户随时移动积木系统也能自适应。网络分三层：顶层依塔完成度调度取/放/回家；中层用 RLDS（鲁棒逻辑动力系统）决定取哪块、放哪里（Pick 为开夹爪→抓取→伸向积木的优先序列，Place 为到位→放置）；底层是原子 pick/place 状态机，以网络锁防止抓取中被抢占。`BuildTowerContext` 含五个监控器：同步积木位置信念、推断塔构型、检测夹爪持物、抑制交互碰撞、诊断输出。运行：`isaac_python franka_examples_main.py --behavior=block_stacking_behavior`。
-
-来源：cortex_tutorials/tutorial_cortex_4_franka_block_stacking.html
-
-**UR10 料箱堆叠**：UR10 配吸盘夹爪，将传送带上的料箱码到托盘，方向不对的先送翻转台。与 Franka 的深层网络不同，此例是**浅层** Dispatch 节点依逻辑条件（堆叠是否完成、料箱是否吸附/需翻转）分发到 PickBin、FlipBin、PlaceBin、回家等顺序状态机，各自用 `DfSetLockState` 保护原子序列。特色：`ObstacleMonitor` 按任务阶段自动开关隐形碰撞障碍以引导 RMPflow 运动；放置阶段持续监测料箱对齐并反应式修正末端目标，支持重试直至码放成功。
-
-来源：cortex_tutorials/tutorial_cortex_5_ur10_bin_stacking.html
+**案例二：UR10 吸盘码垛**：UR10 + 吸盘将传送带上的料箱码上托盘，需翻面的先过翻转站。顶层 Dispatch 分派 flip / pick / place / go home；障碍监视器按任务阶段自动开关隐形碰撞屏障，借 RMPflow 反应性整形运动；放置时末端动态纠偏，放置成功率约 100%。运行：`isaac_python demo_ur10_conveyor_main.py`。
+来源: cortex_tutorials/tutorial_cortex_5_ur10_bin_stacking.html
